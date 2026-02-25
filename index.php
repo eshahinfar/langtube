@@ -251,30 +251,32 @@ function fetchCaptions(string $videoId, string $language): array
 
     $listUrl = 'https://video.google.com/timedtext?type=list&v=' . rawurlencode($videoId);
     $listXml = httpGet($listUrl);
+    $tracks = extractTracks($listXml);
 
-    $availableTracks = extractTrackLanguages($listXml);
-    $fallbackLanguages = array_values(array_unique(array_filter([
-        $language,
-        'en',
-        ...array_keys($availableTracks),
-    ])));
+    $candidates = buildCaptionCandidates($tracks, $language);
 
-    foreach ($fallbackLanguages as $candidateLanguage) {
-        $vtt = downloadCaptionsVtt($videoId, $candidateLanguage);
-        if ($vtt === '') {
-            continue;
+    foreach ($candidates as $candidate) {
+        $vtt = downloadCaptionsVtt($videoId, $candidate);
+        if ($vtt !== '') {
+            $captions = parseVtt($vtt);
+            if ($captions !== []) {
+                return $captions;
+            }
         }
 
-        $captions = parseVtt($vtt);
-        if ($captions !== []) {
-            return $captions;
+        $xml = downloadCaptionsXml($videoId, $candidate);
+        if ($xml !== '') {
+            $captions = parseTimedtextXml($xml);
+            if ($captions !== []) {
+                return $captions;
+            }
         }
     }
 
     return [];
 }
 
-function extractTrackLanguages(string $listXml): array
+function extractTracks(string $listXml): array
 {
     $tracks = [];
     if ($listXml === '') {
@@ -285,33 +287,162 @@ function extractTrackLanguages(string $listXml): array
         $list = @simplexml_load_string($listXml);
         if ($list !== false && isset($list->track)) {
             foreach ($list->track as $track) {
-                $langCode = (string) $track['lang_code'];
-                if ($langCode !== '') {
-                    $tracks[$langCode] = true;
+                $tracks[] = [
+                    'lang' => trim((string) ($track['lang_code'] ?? '')),
+                    'name' => trim((string) ($track['name'] ?? '')),
+                    'kind' => trim((string) ($track['kind'] ?? '')),
+                ];
+            }
+        }
+    }
+
+    if ($tracks === []) {
+        if (preg_match_all('/<track\s+([^>]+)>/i', $listXml, $matches) > 0) {
+            foreach ($matches[1] as $attrs) {
+                $lang = '';
+                $name = '';
+                $kind = '';
+                if (preg_match('/lang_code="([^"]*)"/', $attrs, $m) === 1) {
+                    $lang = trim((string) $m[1]);
+                }
+                if (preg_match('/name="([^"]*)"/', $attrs, $m) === 1) {
+                    $name = trim((string) html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+                }
+                if (preg_match('/kind="([^"]*)"/', $attrs, $m) === 1) {
+                    $kind = trim((string) $m[1]);
+                }
+
+                if ($lang !== '') {
+                    $tracks[] = ['lang' => $lang, 'name' => $name, 'kind' => $kind];
                 }
             }
         }
     }
 
-    if ($tracks === [] && preg_match_all('/lang_code="([^"]+)"/', $listXml, $matches) > 0) {
-        foreach ($matches[1] as $langCode) {
-            $clean = trim((string) $langCode);
-            if ($clean !== '') {
-                $tracks[$clean] = true;
+    return array_values(array_filter($tracks, static fn(array $t): bool => $t['lang'] !== ''));
+}
+
+function buildCaptionCandidates(array $tracks, string $preferredLanguage): array
+{
+    $orderedLanguages = array_values(array_unique(array_filter([
+        $preferredLanguage,
+        'en',
+        ...array_map(static fn(array $t): string => $t['lang'], $tracks),
+    ])));
+
+    $candidates = [];
+    foreach ($orderedLanguages as $lang) {
+        $matchingTracks = array_values(array_filter($tracks, static fn(array $t): bool => $t['lang'] === $lang));
+
+        if ($matchingTracks === []) {
+            $candidates[] = ['lang' => $lang, 'name' => '', 'kind' => ''];
+            continue;
+        }
+
+        foreach ($matchingTracks as $track) {
+            $candidates[] = [
+                'lang' => $lang,
+                'name' => $track['name'] ?? '',
+                'kind' => $track['kind'] ?? '',
+            ];
+        }
+    }
+
+    return dedupeCaptionCandidates($candidates);
+}
+
+function dedupeCaptionCandidates(array $candidates): array
+{
+    $seen = [];
+    $unique = [];
+
+    foreach ($candidates as $candidate) {
+        $key = implode('|', [
+            (string) ($candidate['lang'] ?? ''),
+            (string) ($candidate['name'] ?? ''),
+            (string) ($candidate['kind'] ?? ''),
+        ]);
+
+        if (isset($seen[$key])) {
+            continue;
+        }
+
+        $seen[$key] = true;
+        $unique[] = $candidate;
+    }
+
+    return $unique;
+}
+
+function downloadCaptionsVtt(string $videoId, array $track): string
+{
+    $query = [
+        'v' => $videoId,
+        'lang' => (string) ($track['lang'] ?? ''),
+        'fmt' => 'vtt',
+    ];
+
+    if (($track['name'] ?? '') !== '') {
+        $query['name'] = (string) $track['name'];
+    }
+
+    if (($track['kind'] ?? '') !== '') {
+        $query['kind'] = (string) $track['kind'];
+    }
+
+    $captionsUrl = 'https://video.google.com/timedtext?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    return httpGet($captionsUrl);
+}
+
+function downloadCaptionsXml(string $videoId, array $track): string
+{
+    $query = [
+        'v' => $videoId,
+        'lang' => (string) ($track['lang'] ?? ''),
+    ];
+
+    if (($track['name'] ?? '') !== '') {
+        $query['name'] = (string) $track['name'];
+    }
+
+    if (($track['kind'] ?? '') !== '') {
+        $query['kind'] = (string) $track['kind'];
+    }
+
+    $captionsUrl = 'https://video.google.com/timedtext?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    return httpGet($captionsUrl);
+}
+
+function parseTimedtextXml(string $xml): array
+{
+    if ($xml === '') {
+        return [];
+    }
+
+    $captions = [];
+
+    if (function_exists('simplexml_load_string')) {
+        $root = @simplexml_load_string($xml);
+        if ($root !== false && isset($root->text)) {
+            foreach ($root->text as $node) {
+                $start = (float) ($node['start'] ?? 0);
+                $duration = (float) ($node['dur'] ?? 0);
+                $end = $duration > 0 ? $start + $duration : $start + 2;
+                $text = trim(html_entity_decode((string) $node, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+                if ($text === '') {
+                    continue;
+                }
+
+                $captions[] = [
+                    'start' => $start,
+                    'end' => $end,
+                    'text' => $text,
+                ];
             }
         }
     }
 
-    return $tracks;
-}
-
-function downloadCaptionsVtt(string $videoId, string $language): string
-{
-    $captionsUrl = 'https://video.google.com/timedtext?v=' . rawurlencode($videoId)
-        . '&lang=' . rawurlencode($language)
-        . '&fmt=vtt';
-
-    return httpGet($captionsUrl);
+    return $captions;
 }
 
 function parseVtt(string $vtt): array
@@ -351,6 +482,17 @@ function parseVtt(string $vtt): array
 
         if ($currentStart !== null && $currentEnd !== null && !preg_match('/^\d+$/', $trimmed)) {
             $textBuffer[] = $trimmed;
+        }
+    }
+
+    if ($currentStart !== null && $currentEnd !== null && $textBuffer !== []) {
+        $text = trim(html_entity_decode(strip_tags(implode(' ', $textBuffer)), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($text !== '') {
+            $captions[] = [
+                'start' => $currentStart,
+                'end' => $currentEnd,
+                'text' => $text,
+            ];
         }
     }
 
