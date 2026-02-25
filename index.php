@@ -76,7 +76,7 @@ if ($action !== null) {
                 }
 
                 $result = toggleWord(
-                    mb_strtolower($word),
+                    lowercaseWord($word),
                     $meaning,
                     $learningLanguage,
                     $nativeLanguage
@@ -170,6 +170,37 @@ function getConnection(): ?PDO
     }
 }
 
+function stringContains(string $haystack, string $needle): bool
+{
+    if (function_exists('str_contains')) {
+        return str_contains($haystack, $needle);
+    }
+
+    if ($needle === '') {
+        return true;
+    }
+
+    return strpos($haystack, $needle) !== false;
+}
+
+function stringStartsWith(string $haystack, string $prefix): bool
+{
+    if (function_exists('str_starts_with')) {
+        return str_starts_with($haystack, $prefix);
+    }
+
+    return substr($haystack, 0, strlen($prefix)) === $prefix;
+}
+
+function lowercaseWord(string $value): string
+{
+    if (function_exists('mb_strtolower')) {
+        return mb_strtolower($value, 'UTF-8');
+    }
+
+    return strtolower($value);
+}
+
 function parseYouTubeVideoId(string $url): ?string
 {
     $trimmed = trim($url);
@@ -189,23 +220,23 @@ function parseYouTubeVideoId(string $url): ?string
     $host = $parts['host'] ?? '';
     $path = $parts['path'] ?? '';
 
-    if (str_contains($host, 'youtu.be')) {
+    if (stringContains($host, 'youtu.be')) {
         $id = trim($path, '/');
         return preg_match('/^[A-Za-z0-9_-]{11}$/', $id) === 1 ? $id : null;
     }
 
-    if (str_contains($host, 'youtube.com')) {
+    if (stringContains($host, 'youtube.com')) {
         parse_str($parts['query'] ?? '', $queryParams);
         if (isset($queryParams['v']) && preg_match('/^[A-Za-z0-9_-]{11}$/', (string) $queryParams['v']) === 1) {
             return (string) $queryParams['v'];
         }
 
-        if (str_starts_with($path, '/shorts/')) {
+        if (stringStartsWith($path, '/shorts/')) {
             $id = explode('/', trim($path, '/'))[1] ?? '';
             return preg_match('/^[A-Za-z0-9_-]{11}$/', $id) === 1 ? $id : null;
         }
 
-        if (str_starts_with($path, '/embed/')) {
+        if (stringStartsWith($path, '/embed/')) {
             $id = explode('/', trim($path, '/'))[1] ?? '';
             return preg_match('/^[A-Za-z0-9_-]{11}$/', $id) === 1 ? $id : null;
         }
