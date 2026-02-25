@@ -164,7 +164,7 @@ function getConnection(): ?PDO
         $pdo = new PDO('sqlite:' . DB_FILE);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         return $pdo;
-    } catch (Throwable) {
+    } catch (Throwable $exception) {
         $failed = true;
         return null;
     }
