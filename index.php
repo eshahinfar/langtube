@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 const DB_FILE = __DIR__ . '/data/langtube.sqlite';
 
-initializeDatabase();
+$databaseError = initializeDatabase();
 
 $action = $_GET['action'] ?? null;
 if ($action !== null) {
@@ -69,6 +69,12 @@ if ($action !== null) {
                     exit;
                 }
 
+                if ($databaseError !== null) {
+                    http_response_code(503);
+                    echo json_encode(['error' => 'Vocabulary storage is unavailable right now.']);
+                    exit;
+                }
+
                 $result = toggleWord(
                     mb_strtolower($word),
                     $meaning,
@@ -85,6 +91,11 @@ if ($action !== null) {
                 if ($learningLanguage === '' || $nativeLanguage === '') {
                     http_response_code(400);
                     echo json_encode(['error' => 'learningLanguage and nativeLanguage are required.']);
+                    exit;
+                }
+
+                if ($databaseError !== null) {
+                    echo json_encode(['items' => []], JSON_UNESCAPED_UNICODE);
                     exit;
                 }
 
@@ -107,14 +118,20 @@ if ($action !== null) {
     }
 }
 
-function initializeDatabase(): void
+function initializeDatabase(): ?string
 {
     $dir = dirname(DB_FILE);
     if (!is_dir($dir)) {
-        mkdir($dir, 0775, true);
+        if (!@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return 'Unable to create data directory.';
+        }
     }
 
     $pdo = getConnection();
+    if (!$pdo instanceof PDO) {
+        return 'Database connection unavailable.';
+    }
+
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS vocabulary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,18 +143,31 @@ function initializeDatabase(): void
             UNIQUE(word, learning_language, native_language)
         )'
     );
+
+    return null;
 }
 
-function getConnection(): PDO
+function getConnection(): ?PDO
 {
     static $pdo = null;
+    static $failed = false;
+
+    if ($failed) {
+        return null;
+    }
+
     if ($pdo instanceof PDO) {
         return $pdo;
     }
 
-    $pdo = new PDO('sqlite:' . DB_FILE);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    return $pdo;
+    try {
+        $pdo = new PDO('sqlite:' . DB_FILE);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        return $pdo;
+    } catch (Throwable) {
+        $failed = true;
+        return null;
+    }
 }
 
 function parseYouTubeVideoId(string $url): ?string
@@ -350,6 +380,9 @@ function httpGet(string $url): string
 function toggleWord(string $word, string $meaning, string $learningLanguage, string $nativeLanguage): array
 {
     $pdo = getConnection();
+    if (!$pdo instanceof PDO) {
+        return ['starred' => false, 'message' => 'Vocabulary storage unavailable.'];
+    }
 
     $select = $pdo->prepare(
         'SELECT id FROM vocabulary WHERE word = :word AND learning_language = :learning_language AND native_language = :native_language'
@@ -385,6 +418,9 @@ function toggleWord(string $word, string $meaning, string $learningLanguage, str
 function getVocabulary(string $learningLanguage, string $nativeLanguage): array
 {
     $pdo = getConnection();
+    if (!$pdo instanceof PDO) {
+        return [];
+    }
 
     $stmt = $pdo->prepare(
         'SELECT word, meaning, created_at
