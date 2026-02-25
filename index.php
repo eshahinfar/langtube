@@ -249,9 +249,10 @@ function fetchCaptions(string $videoId, string $language): array
 {
     $language = preg_replace('/[^A-Za-z-]/', '', $language) ?: 'en';
 
-    $listUrl = 'https://video.google.com/timedtext?type=list&v=' . rawurlencode($videoId);
-    $listXml = httpGet($listUrl);
-    $tracks = extractTracks($listXml);
+    $baseListUrl = 'https://video.google.com/timedtext?type=list&v=' . rawurlencode($videoId);
+    $manualTracks = extractTracks(httpGet($baseListUrl));
+    $autoTracks = extractTracks(httpGet($baseListUrl . '&asrs=1'));
+    $tracks = mergeTracks($manualTracks, $autoTracks);
 
     $candidates = buildCaptionCandidates($tracks, $language);
 
@@ -274,6 +275,11 @@ function fetchCaptions(string $videoId, string $language): array
     }
 
     return [];
+}
+
+function mergeTracks(array $manualTracks, array $autoTracks): array
+{
+    return dedupeCaptionCandidates(array_merge($manualTracks, $autoTracks));
 }
 
 function extractTracks(string $listXml): array
@@ -334,11 +340,6 @@ function buildCaptionCandidates(array $tracks, string $preferredLanguage): array
     foreach ($orderedLanguages as $lang) {
         $matchingTracks = array_values(array_filter($tracks, static fn(array $t): bool => $t['lang'] === $lang));
 
-        if ($matchingTracks === []) {
-            $candidates[] = ['lang' => $lang, 'name' => '', 'kind' => ''];
-            continue;
-        }
-
         foreach ($matchingTracks as $track) {
             $candidates[] = [
                 'lang' => $lang,
@@ -346,6 +347,12 @@ function buildCaptionCandidates(array $tracks, string $preferredLanguage): array
                 'kind' => $track['kind'] ?? '',
             ];
         }
+
+        // Explicitly try auto-generated subtitles even if track-list metadata is incomplete.
+        $candidates[] = ['lang' => $lang, 'name' => '', 'kind' => 'asr'];
+
+        // And finally try plain language-only fetch.
+        $candidates[] = ['lang' => $lang, 'name' => '', 'kind' => ''];
     }
 
     return dedupeCaptionCandidates($candidates);
