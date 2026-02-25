@@ -190,41 +190,67 @@ function fetchCaptions(string $videoId, string $language): array
 
     $listUrl = 'https://video.google.com/timedtext?type=list&v=' . rawurlencode($videoId);
     $listXml = httpGet($listUrl);
-    if ($listXml === '') {
-        return [];
-    }
 
-    $list = @simplexml_load_string($listXml);
-    if ($list === false || !isset($list->track)) {
-        return [];
-    }
+    $availableTracks = extractTrackLanguages($listXml);
+    $fallbackLanguages = array_values(array_unique(array_filter([
+        $language,
+        'en',
+        ...array_keys($availableTracks),
+    ])));
 
-    $availableTracks = [];
-    foreach ($list->track as $track) {
-        $langCode = (string) $track['lang_code'];
-        if ($langCode !== '') {
-            $availableTracks[$langCode] = true;
+    foreach ($fallbackLanguages as $candidateLanguage) {
+        $vtt = downloadCaptionsVtt($videoId, $candidateLanguage);
+        if ($vtt === '') {
+            continue;
+        }
+
+        $captions = parseVtt($vtt);
+        if ($captions !== []) {
+            return $captions;
         }
     }
 
-    $targetLanguage = isset($availableTracks[$language])
-        ? $language
-        : (isset($availableTracks['en']) ? 'en' : array_key_first($availableTracks));
+    return [];
+}
 
-    if ($targetLanguage === null) {
-        return [];
+function extractTrackLanguages(string $listXml): array
+{
+    $tracks = [];
+    if ($listXml === '') {
+        return $tracks;
     }
 
+    if (function_exists('simplexml_load_string')) {
+        $list = @simplexml_load_string($listXml);
+        if ($list !== false && isset($list->track)) {
+            foreach ($list->track as $track) {
+                $langCode = (string) $track['lang_code'];
+                if ($langCode !== '') {
+                    $tracks[$langCode] = true;
+                }
+            }
+        }
+    }
+
+    if ($tracks === [] && preg_match_all('/lang_code="([^"]+)"/', $listXml, $matches) > 0) {
+        foreach ($matches[1] as $langCode) {
+            $clean = trim((string) $langCode);
+            if ($clean !== '') {
+                $tracks[$clean] = true;
+            }
+        }
+    }
+
+    return $tracks;
+}
+
+function downloadCaptionsVtt(string $videoId, string $language): string
+{
     $captionsUrl = 'https://video.google.com/timedtext?v=' . rawurlencode($videoId)
-        . '&lang=' . rawurlencode($targetLanguage)
+        . '&lang=' . rawurlencode($language)
         . '&fmt=vtt';
 
-    $vtt = httpGet($captionsUrl);
-    if ($vtt === '') {
-        return [];
-    }
-
-    return parseVtt($vtt);
+    return httpGet($captionsUrl);
 }
 
 function parseVtt(string $vtt): array
