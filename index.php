@@ -449,6 +449,36 @@ function parseTimedtextXml(string $xml): array
         }
     }
 
+    if ($captions === [] && preg_match_all('/<text\b([^>]*)>(.*?)<\/text>/si', $xml, $matches, PREG_SET_ORDER) > 0) {
+        foreach ($matches as $match) {
+            $attributes = $match[1] ?? '';
+            $content = $match[2] ?? '';
+
+            $start = 0.0;
+            $duration = 0.0;
+
+            if (preg_match('/\bstart="([^"]+)"/', $attributes, $startMatch) === 1) {
+                $start = (float) $startMatch[1];
+            }
+
+            if (preg_match('/\bdur="([^"]+)"/', $attributes, $durationMatch) === 1) {
+                $duration = (float) $durationMatch[1];
+            }
+
+            $end = $duration > 0 ? $start + $duration : $start + 2;
+            $text = trim(html_entity_decode(strip_tags($content), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            if ($text === '') {
+                continue;
+            }
+
+            $captions[] = [
+                'start' => $start,
+                'end' => $end,
+                'text' => $text,
+            ];
+        }
+    }
+
     return $captions;
 }
 
@@ -480,7 +510,7 @@ function parseVtt(string $vtt): array
             continue;
         }
 
-        if (preg_match('/^(\d{2}:\d{2}:\d{2}\.\d{3})\s-->\s(\d{2}:\d{2}:\d{2}\.\d{3})/', $trimmed, $matches) === 1) {
+        if (preg_match('/^((?:\d{2}:)?\d{2}:\d{2}\.\d{3})\s-->\s((?:\d{2}:)?\d{2}:\d{2}\.\d{3})/', $trimmed, $matches) === 1) {
             $currentStart = vttTimeToSeconds($matches[1]);
             $currentEnd = vttTimeToSeconds($matches[2]);
             $textBuffer = [];
@@ -508,8 +538,19 @@ function parseVtt(string $vtt): array
 
 function vttTimeToSeconds(string $timestamp): float
 {
-    [$hours, $minutes, $seconds] = explode(':', $timestamp);
-    return ((int) $hours * 3600) + ((int) $minutes * 60) + (float) $seconds;
+    $parts = explode(':', $timestamp);
+
+    if (count($parts) === 3) {
+        [$hours, $minutes, $seconds] = $parts;
+        return ((int) $hours * 3600) + ((int) $minutes * 60) + (float) $seconds;
+    }
+
+    if (count($parts) === 2) {
+        [$minutes, $seconds] = $parts;
+        return ((int) $minutes * 60) + (float) $seconds;
+    }
+
+    return 0.0;
 }
 
 function translateWord(string $word, string $from, string $to): array
