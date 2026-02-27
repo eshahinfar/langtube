@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 const DB_FILE = __DIR__ . '/data/langtube.sqlite';
+const CAPTIONS_CACHE_DIR = __DIR__ . '/data/captions';
 
 $databaseError = initializeDatabase();
 
@@ -249,6 +250,11 @@ function fetchCaptions(string $videoId, string $language): array
 {
     $language = preg_replace('/[^A-Za-z-]/', '', $language) ?: 'en';
 
+    $cached = readCaptionCache($videoId, $language);
+    if ($cached !== []) {
+        return $cached;
+    }
+
     $listResponses = fetchTimedtextLists($videoId);
     $manualTracks = extractTracks((string) ($listResponses['manual'] ?? ''));
     $autoTracks = extractTracks((string) ($listResponses['auto'] ?? ''));
@@ -257,10 +263,24 @@ function fetchCaptions(string $videoId, string $language): array
     $candidates = buildCaptionCandidates($tracks, $language);
 
     foreach ($candidates as $candidate) {
+        $candidateLanguage = (string) ($candidate['lang'] ?? $language);
+
+        $cachedCandidate = readCaptionCache($videoId, $candidateLanguage);
+        if ($cachedCandidate !== []) {
+            if ($candidateLanguage !== $language) {
+                writeCaptionCache($videoId, $language, $cachedCandidate);
+            }
+            return $cachedCandidate;
+        }
+
         $vtt = downloadCaptionsVtt($videoId, $candidate);
         if ($vtt !== '') {
             $captions = parseVtt($vtt);
             if ($captions !== []) {
+                writeCaptionCache($videoId, $candidateLanguage, $captions);
+                if ($candidateLanguage !== $language) {
+                    writeCaptionCache($videoId, $language, $captions);
+                }
                 return $captions;
             }
         }
@@ -269,12 +289,72 @@ function fetchCaptions(string $videoId, string $language): array
         if ($xml !== '') {
             $captions = parseTimedtextXml($xml);
             if ($captions !== []) {
+                writeCaptionCache($videoId, $candidateLanguage, $captions);
+                if ($candidateLanguage !== $language) {
+                    writeCaptionCache($videoId, $language, $captions);
+                }
                 return $captions;
             }
         }
     }
 
     return [];
+}
+
+function readCaptionCache(string $videoId, string $language): array
+{
+    $path = captionCachePath($videoId, $language);
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') {
+        return [];
+    }
+
+    $data = json_decode($raw, true);
+    if (!is_array($data) || !isset($data['captions']) || !is_array($data['captions'])) {
+        return [];
+    }
+
+    return $data['captions'];
+}
+
+function writeCaptionCache(string $videoId, string $language, array $captions): void
+{
+    if ($captions === []) {
+        return;
+    }
+
+    $dir = CAPTIONS_CACHE_DIR;
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+
+    if (!is_dir($dir)) {
+        return;
+    }
+
+    $payload = json_encode([
+        'videoId' => $videoId,
+        'language' => $language,
+        'captions' => $captions,
+        'cachedAt' => gmdate('c'),
+    ], JSON_UNESCAPED_UNICODE);
+
+    if ($payload === false) {
+        return;
+    }
+
+    @file_put_contents(captionCachePath($videoId, $language), $payload, LOCK_EX);
+}
+
+function captionCachePath(string $videoId, string $language): string
+{
+    $safeVideo = preg_replace('/[^A-Za-z0-9_-]/', '', $videoId) ?: 'video';
+    $safeLang = preg_replace('/[^A-Za-z0-9_-]/', '', $language) ?: 'lang';
+    return CAPTIONS_CACHE_DIR . '/' . $safeVideo . '__' . $safeLang . '.json';
 }
 
 function fetchTimedtextLists(string $videoId): array
