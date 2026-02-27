@@ -249,9 +249,9 @@ function fetchCaptions(string $videoId, string $language): array
 {
     $language = preg_replace('/[^A-Za-z-]/', '', $language) ?: 'en';
 
-    $baseListUrl = 'https://video.google.com/timedtext?type=list&v=' . rawurlencode($videoId);
-    $manualTracks = extractTracks(httpGet($baseListUrl));
-    $autoTracks = extractTracks(httpGet($baseListUrl . '&asrs=1'));
+    $listResponses = fetchTimedtextLists($videoId);
+    $manualTracks = extractTracks((string) ($listResponses['manual'] ?? ''));
+    $autoTracks = extractTracks((string) ($listResponses['auto'] ?? ''));
     $tracks = mergeTracks($manualTracks, $autoTracks);
 
     $candidates = buildCaptionCandidates($tracks, $language);
@@ -275,6 +275,26 @@ function fetchCaptions(string $videoId, string $language): array
     }
 
     return [];
+}
+
+function fetchTimedtextLists(string $videoId): array
+{
+    $endpoints = [
+        'https://video.google.com/timedtext',
+        'https://www.youtube.com/api/timedtext',
+    ];
+
+    foreach ($endpoints as $endpoint) {
+        $base = $endpoint . '?type=list&v=' . rawurlencode($videoId);
+        $manual = httpGet($base);
+        $auto = httpGet($base . '&asrs=1');
+
+        if ($manual !== '' || $auto !== '') {
+            return ['manual' => $manual, 'auto' => $auto];
+        }
+    }
+
+    return ['manual' => '', 'auto' => ''];
 }
 
 function mergeTracks(array $manualTracks, array $autoTracks): array
@@ -397,8 +417,7 @@ function downloadCaptionsVtt(string $videoId, array $track): string
         $query['kind'] = (string) $track['kind'];
     }
 
-    $captionsUrl = 'https://video.google.com/timedtext?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
-    return httpGet($captionsUrl);
+    return fetchTimedtextPayload($query);
 }
 
 function downloadCaptionsXml(string $videoId, array $track): string
@@ -416,8 +435,25 @@ function downloadCaptionsXml(string $videoId, array $track): string
         $query['kind'] = (string) $track['kind'];
     }
 
-    $captionsUrl = 'https://video.google.com/timedtext?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
-    return httpGet($captionsUrl);
+    return fetchTimedtextPayload($query);
+}
+
+function fetchTimedtextPayload(array $query): string
+{
+    $endpoints = [
+        'https://video.google.com/timedtext',
+        'https://www.youtube.com/api/timedtext',
+    ];
+
+    foreach ($endpoints as $endpoint) {
+        $url = $endpoint . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+        $payload = httpGet($url);
+        if ($payload !== '') {
+            return $payload;
+        }
+    }
+
+    return '';
 }
 
 function parseTimedtextXml(string $xml): array
